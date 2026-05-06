@@ -6,7 +6,6 @@ import os
 import threading
 import time
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
 from flask import Response, jsonify, render_template, request, stream_with_context
 from plugin import PluginModuleBase, default_route_socketio_module
 from .logic_4khd import Logic4KHD
@@ -36,7 +35,7 @@ class ModuleMain(PluginModuleBase):
         }
         self._scan_timer = None
         self._scan_running = False
-        self._executor = None
+        self._download_sem = threading.Semaphore(2)  # 동시 2개만 다운로드 (서버 부하 방지)
         self._download_status = {}  # {post_id: {current, total, status}}
         default_route_socketio_module(self)
 
@@ -278,41 +277,41 @@ class ModuleMain(PluginModuleBase):
     def _scan_single_keyword(self, kw_obj):
         keyword = kw_obj['keyword']
         include_old = kw_obj.get('include_old', False)
-        self.P.logger.info(f'[4KHD-Auto] 키워드 스캔: "{keyword}" (과거포함: {include_old})')
+        self.P.logger.info(f'[4KHD-Auto] 키워드 스쳪: "{keyword}" (과거포함: {include_old})')
 
         base_url = self._get_effective_base_url()
         target_path = self.P.ModelSetting.get('download_path')
         if not os.path.exists(target_path):
             os.makedirs(target_path)
 
-        max_concurrent = int(self.P.ModelSetting.get('max_concurrent') or 5)
-        if not self._executor:
-            self._executor = ThreadPoolExecutor(max_workers=max_concurrent)
-
         page = 1
         empty_streak = 0
-        max_pages = 200 if include_old else 3  # 신규만: 최대 3페이지
+        max_pages = 200 if include_old else 3
+        download_queue = []  # 스캔 먼저 다 하고, 순차 다운로드
 
+        # 1단계: 스캔하여 다운로드 대상 수집
         while page <= max_pages:
             try:
+                self.P.logger.info(f'[4KHD-Auto] "{keyword}" 페이지 {page} 스캔...')
                 items = Logic4KHD.get_list(base_url=base_url, page=page, search=keyword)
                 if not items:
                     empty_streak += 1
                     if empty_streak >= 2:
                         break
                     page += 1
+                    time.sleep(1)
                     continue
 
-                new_items = []
+                new_count = 0
                 for item in items:
                     post_id = item.get('id', item.get('url', '').strip('/').split('/')[-1])
-                    # 대소문자 무시 매칭
                     if keyword.lower() not in item.get('title', '').lower():
                         continue
                     if not self._is_downloaded(str(post_id)):
-                        new_items.append({**item, 'post_id': str(post_id)})
+                        download_queue.append({**item, 'post_id': str(post_id)})
+                        new_count += 1
 
-                if not new_items:
+                if new_count == 0:
                     empty_streak += 1
                     if empty_streak >= 2 and not include_old:
                         break
@@ -321,19 +320,24 @@ class ModuleMain(PluginModuleBase):
                 else:
                     empty_streak = 0
 
-                # 다운로드 제출
-                for item in new_items:
-                    self._executor.submit(
-                        self._download_and_record,
-                        item['url'], item['post_id'], keyword, target_path, False
-                    )
-
                 page += 1
-                time.sleep(1)  # Rate limiting
+                time.sleep(1)  # 페이지 간 딜레이
 
             except Exception as e:
                 self.P.logger.error(f'[4KHD-Auto] 페이지 {page} 스캔 오류: {e}')
                 break
+
+        self.P.logger.info(f'[4KHD-Auto] "{keyword}" 스캔 완료: {len(download_queue)}개 다운로드 대기')
+
+        # 2단계: 순차 다운로드 (딜레이 포함)
+        for idx, item in enumerate(download_queue):
+            self.P.logger.info(f'[4KHD-Auto] [{idx+1}/{len(download_queue)}] 다운로드: {item.get("title", item["post_id"])}')
+            self._download_and_record(
+                item['url'], item['post_id'], keyword, target_path, False
+            )
+            # 다운로드 간 딜레이 (서버 부하 방지)
+            if idx < len(download_queue) - 1:
+                time.sleep(3)
 
         # 과거 포함 스캔 완료 시 플래그 해제
         if include_old:
@@ -358,14 +362,26 @@ class ModuleMain(PluginModuleBase):
             except:
                 Image = None
 
-            self.P.logger.info(f'[4KHD-Auto] 다운로드 시작: {post_id} ({url})')
+            self.P.logger.info(f'[4KHD-Auto] 다운로드 시작: {post_id}')
             self._download_status[post_id] = {'current': 0, 'total': 0, 'status': 'fetching'}
 
-            data = Logic4KHD.get_detail(url)
+            # get_detail 재시도 (최대 3회, 지수 백오프)
+            data = None
+            for attempt in range(3):
+                try:
+                    data = Logic4KHD.get_detail(url)
+                    if data:
+                        break
+                except Exception as e:
+                    self.P.logger.warn(f'[4KHD-Auto] get_detail 실패 ({attempt+1}/3): {e}')
+                if attempt < 2:
+                    wait = (attempt + 1) * 5  # 5초, 10초
+                    self.P.logger.info(f'[4KHD-Auto] {wait}초 후 재시도...')
+                    time.sleep(wait)
+
             if not data:
-                self._record_history(post_id, url, 'Unknown', keyword, 'failed', '상세 정보 로딩 실패')
+                self._record_history(post_id, url, 'Unknown', keyword, 'failed', '상세 정보 로딩 실패 (3회 재시도)')
                 self._download_status[post_id] = {'status': 'error', 'msg': '상세 정보 로딩 실패'}
-                self._send_discord('❌ 다운로드 실패', f'**{post_id}**\n상세 정보 로딩 실패', 0xFF0000)
                 return
 
             title = data.get('title', post_id)
@@ -383,27 +399,37 @@ class ModuleMain(PluginModuleBase):
                 os.makedirs(temp_folder)
 
             session = Logic4KHD.get_session()
-            total = len(data.get('images', []))
+            images = data.get('images', [])
+            total = len(images)
             self._download_status[post_id] = {'current': 0, 'total': total, 'status': 'downloading', 'title': title}
 
             downloaded_files = []
-            for idx, img_url in enumerate(data.get('images', [])):
-                try:
-                    res = session.get(img_url, headers=Logic4KHD.HEADERS, timeout=30)
-                    if res.status_code == 200:
-                        file_path = os.path.join(temp_folder, f"{idx+1:03d}.jpg")
-                        if Image and not img_url.lower().endswith('.gif'):
-                            img = Image.open(BytesIO(res.content))
-                            if img.mode != 'RGB':
-                                img = img.convert('RGB')
-                            img.save(file_path, 'JPEG', quality=95, subsampling=0)
+            for idx, img_url in enumerate(images):
+                # 이미지 다운로드 재시도 (최대 2회)
+                for img_attempt in range(2):
+                    try:
+                        res = session.get(img_url, headers=Logic4KHD.HEADERS, timeout=30)
+                        if res.status_code == 200:
+                            file_path = os.path.join(temp_folder, f"{idx+1:03d}.jpg")
+                            if Image and not img_url.lower().endswith('.gif'):
+                                img = Image.open(BytesIO(res.content))
+                                if img.mode != 'RGB':
+                                    img = img.convert('RGB')
+                                img.save(file_path, 'JPEG', quality=95, subsampling=0)
+                            else:
+                                with open(file_path, 'wb') as f:
+                                    f.write(res.content)
+                            downloaded_files.append(file_path)
+                            break
+                        elif res.status_code == 429 or res.status_code >= 500:
+                            # Rate limit 또는 서버 오류 → 대기 후 재시도
+                            time.sleep(3)
                         else:
-                            with open(file_path, 'wb') as f:
-                                f.write(res.content)
-                        downloaded_files.append(file_path)
-                    self._download_status[post_id]['current'] = idx + 1
-                except:
-                    pass
+                            break  # 404 등 클라이언트 오류는 재시도 안 함
+                    except Exception as e:
+                        if img_attempt == 0:
+                            time.sleep(2)
+                self._download_status[post_id]['current'] = idx + 1
 
             # ZIP 압축
             if downloaded_files:
@@ -433,7 +459,6 @@ class ModuleMain(PluginModuleBase):
             self._record_history(post_id, url, str(post_id), keyword, 'failed', str(e))
             self.P.logger.error(f'[4KHD-Auto] 다운로드 오류: {e}')
             self.P.logger.error(traceback.format_exc())
-            self._send_discord('❌ 다운로드 오류', f'**{post_id}**\n```{str(e)}```', 0xFF0000)
 
     def _record_history(self, post_id, url, title, keyword, status, detail=''):
         history = self._get_history()
@@ -565,6 +590,3 @@ class ModuleMain(PluginModuleBase):
         if self._scan_timer:
             self._scan_timer.cancel()
             self._scan_timer = None
-        if self._executor:
-            self._executor.shutdown(wait=False)
-            self._executor = None
