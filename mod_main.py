@@ -35,8 +35,7 @@ class ModuleMain(PluginModuleBase):
         }
         self._scan_timer = None
         self._scan_running = False
-        self._download_sem = threading.Semaphore(2)  # 동시 2개만 다운로드 (서버 부하 방지)
-        self._download_status = {}  # {post_id: {current, total, status}}
+        self._download_status = {}
         default_route_socketio_module(self)
 
     # ─── Helpers: JSON settings ────────────────────────────────────────
@@ -102,20 +101,16 @@ class ModuleMain(PluginModuleBase):
 
     def process_ajax(self, sub, req):
         try:
-            # ── 설정 저장 ──
             if sub == 'setting_save':
                 ret = self.P.ModelSetting.setting_save(self._setting_request_with_defaults(req))
-                # 타이머 재시작
                 self._restart_timer()
                 return jsonify(ret)
 
-            # ── URL 탐지 ──
             if sub == 'discover_url':
                 discovered_url = Logic4KHD.discover_url('https://4khd.com')
                 self._set_setting('4khd_url', discovered_url)
                 return jsonify({'ret': 'success', 'url': discovered_url})
 
-            # ── 키워드 추가 ──
             if sub == 'keyword_add':
                 keyword = req.form.get('keyword', '').strip()
                 if not keyword:
@@ -131,7 +126,6 @@ class ModuleMain(PluginModuleBase):
                 self._save_keywords(keywords)
                 return jsonify({'ret': 'success'})
 
-            # ── 키워드 삭제 ──
             if sub == 'keyword_delete':
                 keyword = req.form.get('keyword', '').strip()
                 keywords = self._get_keywords()
@@ -139,10 +133,9 @@ class ModuleMain(PluginModuleBase):
                 self._save_keywords(keywords)
                 return jsonify({'ret': 'success'})
 
-            # ── 키워드 토글 (활성/비활성) ──
             if sub == 'keyword_toggle':
                 keyword = req.form.get('keyword', '').strip()
-                field = req.form.get('field', 'enabled')  # 'enabled' or 'include_old'
+                field = req.form.get('field', 'enabled')
                 keywords = self._get_keywords()
                 for k in keywords:
                     if k['keyword'].lower() == keyword.lower():
@@ -151,11 +144,9 @@ class ModuleMain(PluginModuleBase):
                 self._save_keywords(keywords)
                 return jsonify({'ret': 'success'})
 
-            # ── 키워드 목록 조회 ──
             if sub == 'keyword_list':
                 return jsonify({'ret': 'success', 'data': self._get_keywords()})
 
-            # ── 수동 스캔 (특정 키워드) ──
             if sub == 'scan_keyword':
                 keyword = req.form.get('keyword', '').strip()
                 if not keyword:
@@ -167,19 +158,16 @@ class ModuleMain(PluginModuleBase):
                 threading.Thread(target=self._scan_single_keyword, args=(kw_obj,), daemon=True).start()
                 return jsonify({'ret': 'success', 'msg': f'"{keyword}" 스캔을 시작합니다.'})
 
-            # ── 전체 수동 스캔 ──
             if sub == 'scan_all':
                 if self._scan_running:
                     return jsonify({'ret': 'error', 'msg': '스캔이 이미 진행 중입니다.'})
                 threading.Thread(target=self._run_scan, daemon=True).start()
                 return jsonify({'ret': 'success', 'msg': '전체 스캔을 시작합니다.'})
 
-            # ── 히스토리 조회 ──
             if sub == 'history_list':
                 page = int(req.form.get('page', 1))
                 per_page = 50
                 history = self._get_history()
-                # 최신순 정렬
                 history.sort(key=lambda h: h.get('date', ''), reverse=True)
                 total = len(history)
                 start = (page - 1) * per_page
@@ -192,7 +180,6 @@ class ModuleMain(PluginModuleBase):
                     'total_pages': (total + per_page - 1) // per_page
                 })
 
-            # ── 히스토리 항목 삭제 (기록만 삭제, 파일 유지) ──
             if sub == 'history_delete':
                 post_id = req.form.get('post_id', '')
                 history = self._get_history()
@@ -200,12 +187,10 @@ class ModuleMain(PluginModuleBase):
                 self._save_history(history)
                 return jsonify({'ret': 'success'})
 
-            # ── 히스토리 전체 초기화 ──
             if sub == 'history_clear':
                 self._save_history([])
                 return jsonify({'ret': 'success'})
 
-            # ── 재다운로드 ──
             if sub == 'redownload':
                 url = req.form.get('url', '')
                 post_id = req.form.get('post_id', '')
@@ -214,14 +199,14 @@ class ModuleMain(PluginModuleBase):
                 target_path = self.P.ModelSetting.get('download_path')
                 if not os.path.exists(target_path):
                     os.makedirs(target_path)
+                # 재다운로드는 get_detail 폴백 사용 (이미지 목록 없으므로)
                 threading.Thread(
-                    target=self._download_and_record,
-                    args=(url, post_id, '수동', target_path, True),
+                    target=self._download_images,
+                    args=(post_id, '수동', url, [], target_path, True),
                     daemon=True
                 ).start()
                 return jsonify({'ret': 'success', 'msg': '재다운로드를 시작합니다.'})
 
-            # ── 다운로드 상태 조회 ──
             if sub == 'download_status':
                 return jsonify({'ret': 'success', 'data': self._download_status})
 
@@ -246,7 +231,6 @@ class ModuleMain(PluginModuleBase):
 
         def tick():
             self._run_scan()
-            # 다음 스케줄
             if self.P.ModelSetting.get_bool('auto_enabled'):
                 self._scan_timer = threading.Timer(interval, tick)
                 self._scan_timer.daemon = True
@@ -277,7 +261,7 @@ class ModuleMain(PluginModuleBase):
     def _scan_single_keyword(self, kw_obj):
         keyword = kw_obj['keyword']
         include_old = kw_obj.get('include_old', False)
-        self.P.logger.info(f'[4KHD-Auto] 키워드 스쳪: "{keyword}" (과거포함: {include_old})')
+        self.P.logger.info(f'[4KHD-Auto] 키워드 스캔: "{keyword}" (과거포함: {include_old})')
 
         base_url = self._get_effective_base_url()
         target_path = self.P.ModelSetting.get('download_path')
@@ -287,9 +271,9 @@ class ModuleMain(PluginModuleBase):
         page = 1
         empty_streak = 0
         max_pages = 200 if include_old else 3
-        download_queue = []  # 스캔 먼저 다 하고, 순차 다운로드
+        download_queue = []
 
-        # 1단계: 스캔하여 다운로드 대상 수집
+        # 1단계: API 스캔 → 이미지 목록 포함 수집
         while page <= max_pages:
             try:
                 self.P.logger.info(f'[4KHD-Auto] "{keyword}" 페이지 {page} 스캔...')
@@ -308,7 +292,12 @@ class ModuleMain(PluginModuleBase):
                     if keyword.lower() not in item.get('title', '').lower():
                         continue
                     if not self._is_downloaded(str(post_id)):
-                        download_queue.append({**item, 'post_id': str(post_id)})
+                        download_queue.append({
+                            'post_id': str(post_id),
+                            'title': item.get('title', ''),
+                            'url': item.get('url', ''),
+                            'images': item.get('images', []),  # ★ API에서 이미 추출됨
+                        })
                         new_count += 1
 
                 if new_count == 0:
@@ -321,7 +310,7 @@ class ModuleMain(PluginModuleBase):
                     empty_streak = 0
 
                 page += 1
-                time.sleep(1)  # 페이지 간 딜레이
+                time.sleep(1)
 
             except Exception as e:
                 self.P.logger.error(f'[4KHD-Auto] 페이지 {page} 스캔 오류: {e}')
@@ -329,15 +318,17 @@ class ModuleMain(PluginModuleBase):
 
         self.P.logger.info(f'[4KHD-Auto] "{keyword}" 스캔 완료: {len(download_queue)}개 다운로드 대기')
 
-        # 2단계: 순차 다운로드 (딜레이 포함)
+        # 2단계: 순차 다운로드 (이미지 목록 직접 전달, get_detail 호출 없음)
         for idx, item in enumerate(download_queue):
-            self.P.logger.info(f'[4KHD-Auto] [{idx+1}/{len(download_queue)}] 다운로드: {item.get("title", item["post_id"])}')
-            self._download_and_record(
-                item['url'], item['post_id'], keyword, target_path, False
+            img_count = len(item.get('images', []))
+            self.P.logger.info(f'[4KHD-Auto] [{idx+1}/{len(download_queue)}] {item["title"]} ({img_count}장)')
+            self._download_images(
+                item['post_id'], keyword, item['url'],
+                item.get('images', []), target_path, False,
+                title_override=item.get('title', '')
             )
-            # 다운로드 간 딜레이 (서버 부하 방지)
             if idx < len(download_queue) - 1:
-                time.sleep(3)
+                time.sleep(2)
 
         # 과거 포함 스캔 완료 시 플래그 해제
         if include_old:
@@ -351,8 +342,9 @@ class ModuleMain(PluginModuleBase):
 
     # ─── Download ──────────────────────────────────────────────────────
 
-    def _download_and_record(self, url, post_id, keyword, target_path, force=False):
-        """게시물의 이미지를 다운로드하여 ZIP으로 묶고 히스토리에 기록"""
+    def _download_images(self, post_id, keyword, url, images, target_path, force=False, title_override=''):
+        """이미지 목록을 다운로드하여 ZIP으로 묶고 히스토리에 기록.
+        images가 비어있으면 get_detail 폴백 시도."""
         try:
             import zipfile
             import shutil
@@ -362,33 +354,40 @@ class ModuleMain(PluginModuleBase):
             except:
                 Image = None
 
-            self.P.logger.info(f'[4KHD-Auto] 다운로드 시작: {post_id}')
-            self._download_status[post_id] = {'current': 0, 'total': 0, 'status': 'fetching'}
+            title = title_override or str(post_id)
 
-            # get_detail 재시도 (최대 3회, 지수 백오프)
-            data = None
-            for attempt in range(3):
-                try:
-                    data = Logic4KHD.get_detail(url)
-                    if data:
-                        break
-                except Exception as e:
-                    self.P.logger.warn(f'[4KHD-Auto] get_detail 실패 ({attempt+1}/3): {e}')
-                if attempt < 2:
-                    wait = (attempt + 1) * 5  # 5초, 10초
-                    self.P.logger.info(f'[4KHD-Auto] {wait}초 후 재시도...')
-                    time.sleep(wait)
+            # 이미지 목록이 없으면 get_detail 폴백 (재다운로드 등)
+            if not images:
+                self.P.logger.info(f'[4KHD-Auto] 이미지 없음, get_detail 폴백: {post_id}')
+                self._download_status[post_id] = {'current': 0, 'total': 0, 'status': 'fetching'}
+                data = None
+                for attempt in range(3):
+                    try:
+                        data = Logic4KHD.get_detail(url)
+                        if data:
+                            break
+                    except:
+                        pass
+                    if attempt < 2:
+                        if attempt == 1:
+                            Logic4KHD.reset_session()
+                        time.sleep((attempt + 1) * 5)
 
-            if not data:
-                self._record_history(post_id, url, 'Unknown', keyword, 'failed', '상세 정보 로딩 실패 (3회 재시도)')
-                self._download_status[post_id] = {'status': 'error', 'msg': '상세 정보 로딩 실패'}
-                return
+                if not data or not data.get('images'):
+                    self._record_history(post_id, url, title, keyword, 'failed', '이미지 추출 실패')
+                    self._download_status[post_id] = {'status': 'error', 'msg': '이미지 추출 실패'}
+                    return
+                images = data['images']
+                title = data.get('title', title)
 
-            title = data.get('title', post_id)
+            self.P.logger.info(f'[4KHD-Auto] 다운로드 시작: {title} ({len(images)}장)')
+
             safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+            if not safe_title:
+                safe_title = str(post_id)
             zip_file_path = os.path.join(target_path, f"{safe_title}.zip")
 
-            # 중복 체크 (force가 아니면)
+            # 중복 체크
             if not force and os.path.exists(zip_file_path):
                 self.P.logger.info(f'[4KHD-Auto] 이미 존재: {zip_file_path}')
                 self._record_history(post_id, url, title, keyword, 'completed', zip_file_path)
@@ -399,13 +398,11 @@ class ModuleMain(PluginModuleBase):
                 os.makedirs(temp_folder)
 
             session = Logic4KHD.get_session()
-            images = data.get('images', [])
             total = len(images)
             self._download_status[post_id] = {'current': 0, 'total': total, 'status': 'downloading', 'title': title}
 
             downloaded_files = []
             for idx, img_url in enumerate(images):
-                # 이미지 다운로드 재시도 (최대 2회)
                 for img_attempt in range(2):
                     try:
                         res = session.get(img_url, headers=Logic4KHD.HEADERS, timeout=30)
@@ -422,11 +419,10 @@ class ModuleMain(PluginModuleBase):
                             downloaded_files.append(file_path)
                             break
                         elif res.status_code == 429 or res.status_code >= 500:
-                            # Rate limit 또는 서버 오류 → 대기 후 재시도
                             time.sleep(3)
                         else:
-                            break  # 404 등 클라이언트 오류는 재시도 안 함
-                    except Exception as e:
+                            break
+                    except:
                         if img_attempt == 0:
                             time.sleep(2)
                 self._download_status[post_id]['current'] = idx + 1
@@ -448,21 +444,20 @@ class ModuleMain(PluginModuleBase):
                     0x00FF00
                 )
             else:
-                self._download_status[post_id] = {'status': 'error', 'msg': '이미지 없음'}
+                self._download_status[post_id] = {'status': 'error', 'msg': '이미지 다운 실패'}
                 if os.path.exists(temp_folder):
                     shutil.rmtree(temp_folder, ignore_errors=True)
                 self._record_history(post_id, url, title, keyword, 'failed', '이미지 다운로드 실패')
-                self._send_discord('❌ 다운로드 실패', f'**{title}**\n키워드: `{keyword}`\n이미지 없음', 0xFF0000)
+                self._send_discord('❌ 다운로드 실패', f'**{title}**\n키워드: `{keyword}`\n이미지 다운 실패', 0xFF0000)
 
         except Exception as e:
             self._download_status[post_id] = {'status': 'error', 'msg': str(e)}
-            self._record_history(post_id, url, str(post_id), keyword, 'failed', str(e))
+            self._record_history(post_id, url, title_override or str(post_id), keyword, 'failed', str(e))
             self.P.logger.error(f'[4KHD-Auto] 다운로드 오류: {e}')
             self.P.logger.error(traceback.format_exc())
 
     def _record_history(self, post_id, url, title, keyword, status, detail=''):
         history = self._get_history()
-        # 기존 항목 업데이트 또는 새로 추가
         existing = next((h for h in history if h['post_id'] == post_id), None)
         entry = {
             'post_id': post_id,
@@ -518,7 +513,6 @@ class ModuleMain(PluginModuleBase):
         return f"/{self.P.package_name}/normal/proxy?url={urllib.parse.quote(target)}"
 
     def _setting_request_with_defaults(self, req):
-        """checkbox 필드가 폼에 없으면(= 체크 해제) False로 보충"""
         from werkzeug.datastructures import MultiDict
 
         class RequestProxy:
