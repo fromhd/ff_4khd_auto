@@ -5,7 +5,7 @@ import json
 from urllib.parse import urljoin, urlparse
 
 class Logic4KHD:
-    BASE_URL = "https://gghh.uk"
+    BASE_URL = "https://uuss.uk"
     API_URL = f"{BASE_URL}/wp-json/wp/v2/posts"
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -87,19 +87,30 @@ class Logic4KHD:
 
     @staticmethod
     def is_supported_base_url(url):
+        """사용자가 저장한 URL이면 무조건 유효로 판단"""
         parsed = urlparse(url or '')
-        host = parsed.netloc.lower()
-        return (
-            host == '4khd.com' or
-            host.endswith('.4khd.com') or
-            host == 'gghh.uk' or
-            host.endswith('.gghh.uk')
-        )
+        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
 
     @staticmethod
     def discover_url(url=None):
-        start_url = url or "https://4khd.com"
-        return Logic4KHD._discover_url(start_url)
+        """API 엔드포인트로 접속 가능한 주소를 확인합니다."""
+        candidates = [
+            'https://uuss.uk',
+            'https://gghh.uk',
+            'https://4khd.com',
+        ]
+        if url and url not in candidates:
+            candidates.insert(0, url)
+        session = Logic4KHD.get_session()
+        for base in candidates:
+            try:
+                api = f"{base.rstrip('/')}/wp-json/wp/v2/posts?per_page=1"
+                res = session.get(api, headers=Logic4KHD.HEADERS, timeout=10)
+                if res.status_code == 200:
+                    return base
+            except:
+                continue
+        return Logic4KHD.BASE_URL
 
     @staticmethod
     def _base_from_url(url):
@@ -159,8 +170,7 @@ class Logic4KHD:
     @staticmethod
     def get_list(base_url=None, page=1, search="", category=""):
         """게시물 목록 (WP REST API 우선, images 포함)"""
-        start_url = base_url if base_url and 'http' in base_url else Logic4KHD.BASE_URL
-        real_base = Logic4KHD._discover_url(start_url)
+        real_base = base_url if base_url and 'http' in base_url else Logic4KHD.BASE_URL
 
         try:
             if category:

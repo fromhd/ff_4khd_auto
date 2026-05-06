@@ -17,7 +17,7 @@ class ModuleMain(PluginModuleBase):
     def __init__(self, P):
         super(ModuleMain, self).__init__(P, name="main")
         self.db_default = {
-            '4khd_url': 'https://gghh.uk',
+            '4khd_url': 'https://uuss.uk',
             'download_path': os.path.join(os.getcwd(), 'downloads', 'ff_4khd_auto'),
             'proxy_enabled': 'True',
             'scan_interval': '30',
@@ -498,16 +498,13 @@ class ModuleMain(PluginModuleBase):
 
     def _get_effective_base_url(self):
         base_url = self.P.ModelSetting.get('4khd_url') or Logic4KHD.BASE_URL
-        if not Logic4KHD.is_supported_base_url(base_url):
-            discovered_url = Logic4KHD.discover_url('https://4khd.com')
-            self._set_setting('4khd_url', discovered_url)
-            return discovered_url
-        if '4khd.com' in base_url:
-            discovered_url = Logic4KHD.discover_url('https://4khd.com')
-            if discovered_url and discovered_url != base_url:
-                self._set_setting('4khd_url', discovered_url)
-                return discovered_url
-        return base_url
+        # 저장된 URL이 유효하면 바로 사용 (discovery 불필요)
+        if base_url and 'http' in base_url:
+            return base_url
+        # URL이 비정상이면 API 기반 탐지
+        discovered_url = Logic4KHD.discover_url()
+        self._set_setting('4khd_url', discovered_url)
+        return discovered_url
 
     def _make_proxy_url(self, target):
         return f"/{self.P.package_name}/normal/proxy?url={urllib.parse.quote(target)}"
