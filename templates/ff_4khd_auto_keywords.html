@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block content %}
+<div>
+  {{ macros.m_button_group([['global_scan_all_btn', '전체 스캔'], ['global_refresh_btn', '새로고침']]) }}
+  <hr>
+
+  <!-- 키워드 추가 -->
+  <div class="card mb-3" style="border: 1px solid #444; background: #2a2a2a;">
+    <div class="card-body">
+      <h5 class="card-title" style="color: #fff;"><i class="fa fa-plus-circle"></i> 키워드 추가</h5>
+      <div class="input-group">
+        <input type="text" id="keyword_input" class="form-control" placeholder="키워드 입력 (예: Artgravia)" style="background: #333; color: #fff; border-color: #555;">
+        <div class="input-group-append">
+          <button class="btn btn-success" id="keyword_add_btn"><i class="fa fa-plus"></i> 추가</button>
+        </div>
+      </div>
+      <small class="text-muted">대소문자 구분 없이 게시물 제목에서 키워드를 검색합니다.</small>
+    </div>
+  </div>
+
+  <!-- 키워드 목록 -->
+  <div class="card" style="border: 1px solid #444; background: #2a2a2a;">
+    <div class="card-header" style="background: #333; color: #fff;">
+      <h5 class="mb-0"><i class="fa fa-tags"></i> 등록된 키워드</h5>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-dark table-hover mb-0" id="keyword_table">
+        <thead>
+          <tr>
+            <th style="width: 40%;">키워드</th>
+            <th style="width: 15%; text-align: center;">활성</th>
+            <th style="width: 15%; text-align: center;">과거 포함</th>
+            <th style="width: 30%; text-align: center;">액션</th>
+          </tr>
+        </thead>
+        <tbody id="keyword_tbody">
+          <tr><td colspan="4" class="text-center text-muted">로딩 중...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+const package_name = "{{ arg['package_name'] }}";
+
+function loadKeywords() {
+    $.ajax({
+        url: '/' + package_name + '/ajax/keyword_list',
+        type: 'POST',
+        success: function(data) {
+            if (data.ret === 'success') {
+                renderKeywords(data.data);
+            }
+        }
+    });
+}
+
+function renderKeywords(keywords) {
+    const tbody = $('#keyword_tbody');
+    tbody.empty();
+    if (!keywords || keywords.length === 0) {
+        tbody.append('<tr><td colspan="4" class="text-center text-muted">등록된 키워드가 없습니다.</td></tr>');
+        return;
+    }
+    keywords.forEach(function(kw) {
+        const enabledBadge = kw.enabled
+            ? '<span class="badge badge-success" style="cursor:pointer; font-size: 0.9em;" onclick="toggleKeyword(\'' + kw.keyword + '\', \'enabled\')">✔ ON</span>'
+            : '<span class="badge badge-secondary" style="cursor:pointer; font-size: 0.9em;" onclick="toggleKeyword(\'' + kw.keyword + '\', \'enabled\')">OFF</span>';
+        const oldBadge = kw.include_old
+            ? '<span class="badge badge-warning" style="cursor:pointer; font-size: 0.9em;" onclick="toggleKeyword(\'' + kw.keyword + '\', \'include_old\')">✔ ON</span>'
+            : '<span class="badge badge-secondary" style="cursor:pointer; font-size: 0.9em;" onclick="toggleKeyword(\'' + kw.keyword + '\', \'include_old\')">OFF</span>';
+
+        tbody.append(
+            '<tr>' +
+            '  <td><strong style="color: #4fc3f7;">' + kw.keyword + '</strong></td>' +
+            '  <td class="text-center">' + enabledBadge + '</td>' +
+            '  <td class="text-center">' + oldBadge + '</td>' +
+            '  <td class="text-center">' +
+            '    <button class="btn btn-sm btn-outline-info mr-1" onclick="scanKeyword(\'' + kw.keyword + '\')"><i class="fa fa-search"></i> 스캔</button>' +
+            '    <button class="btn btn-sm btn-outline-danger" onclick="deleteKeyword(\'' + kw.keyword + '\')"><i class="fa fa-trash"></i></button>' +
+            '  </td>' +
+            '</tr>'
+        );
+    });
+}
+
+function toggleKeyword(keyword, field) {
+    $.ajax({
+        url: '/' + package_name + '/ajax/keyword_toggle',
+        type: 'POST',
+        data: { keyword: keyword, field: field },
+        success: function(data) {
+            if (data.ret === 'success') loadKeywords();
+        }
+    });
+}
+
+function deleteKeyword(keyword) {
+    if (!confirm('"' + keyword + '" 키워드를 삭제하시겠습니까?')) return;
+    $.ajax({
+        url: '/' + package_name + '/ajax/keyword_delete',
+        type: 'POST',
+        data: { keyword: keyword },
+        success: function(data) {
+            if (data.ret === 'success') {
+                $.notify('<strong>삭제됨</strong>', {type: 'success'});
+                loadKeywords();
+            }
+        }
+    });
+}
+
+function scanKeyword(keyword) {
+    $.ajax({
+        url: '/' + package_name + '/ajax/scan_keyword',
+        type: 'POST',
+        data: { keyword: keyword },
+        success: function(data) {
+            if (data.ret === 'success') {
+                $.notify('<strong>' + data.msg + '</strong>', {type: 'info'});
+            } else {
+                $.notify('<strong>' + data.msg + '</strong>', {type: 'warning'});
+            }
+        }
+    });
+}
+
+$(document).ready(function() {
+    loadKeywords();
+
+    // 키워드 추가
+    $('#keyword_add_btn').click(function(e) {
+        e.preventDefault();
+        const keyword = $('#keyword_input').val().trim();
+        if (!keyword) return;
+        $.ajax({
+            url: '/' + package_name + '/ajax/keyword_add',
+            type: 'POST',
+            data: { keyword: keyword },
+            success: function(data) {
+                if (data.ret === 'success') {
+                    $('#keyword_input').val('');
+                    $.notify('<strong>"' + keyword + '" 추가됨</strong>', {type: 'success'});
+                    loadKeywords();
+                } else {
+                    $.notify('<strong>' + data.msg + '</strong>', {type: 'warning'});
+                }
+            }
+        });
+    });
+
+    // Enter 키로 추가
+    $('#keyword_input').keypress(function(e) {
+        if (e.which === 13) {
+            e.preventDefault();
+            $('#keyword_add_btn').click();
+        }
+    });
+
+    // 전체 스캔
+    $(document).on('click', '#global_scan_all_btn', function(e) {
+        e.preventDefault();
+        const btn = $(this);
+        btn.prop('disabled', true);
+        $.ajax({
+            url: '/' + package_name + '/ajax/scan_all',
+            type: 'POST',
+            success: function(data) {
+                $.notify('<strong>' + data.msg + '</strong>', {type: data.ret === 'success' ? 'info' : 'warning'});
+            },
+            complete: function() {
+                setTimeout(function() { btn.prop('disabled', false); }, 3000);
+            }
+        });
+    });
+
+    // 새로고침
+    $(document).on('click', '#global_refresh_btn', function(e) {
+        e.preventDefault();
+        loadKeywords();
+    });
+});
+</script>
+{% endblock %}

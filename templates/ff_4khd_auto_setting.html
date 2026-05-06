@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block content %}
+<div>
+  {{ macros.m_button_group([['global_setting_save_btn', '저장'], ['global_discover_btn', '최신 주소 불러오기']]) }}
+  <hr>
+  <form id="setting">
+    <div class="tab-content">
+
+      <!-- 사이트 설정 -->
+      <div class="card mb-3" style="border: 1px solid #444; background: #2a2a2a;">
+        <div class="card-header" style="background: #333; color: #fff;">
+          <h5 class="mb-0"><i class="fa fa-globe"></i> 사이트 설정</h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-primary">
+            <i class="fa fa-info-circle"></i>
+            <b>자동 주소 탐지 사용 중</b> —
+            저장된 주소가 <code>4khd.com</code> 계열이면 실제 리다이렉트 주소를 자동 확인합니다.
+          </div>
+          {{ macros.setting_input_text('4khd_url', '현재 4KHD 주소', value=arg['4khd_url']) }}
+          {{ macros.setting_input_text('download_path', '다운로드 경로', value=arg['download_path']) }}
+          {{ macros.setting_checkbox('proxy_enabled', '이미지 프록시 사용', value=arg['proxy_enabled']) }}
+        </div>
+      </div>
+
+      <!-- 자동 스캔 설정 -->
+      <div class="card mb-3" style="border: 1px solid #444; background: #2a2a2a;">
+        <div class="card-header" style="background: #333; color: #fff;">
+          <h5 class="mb-0"><i class="fa fa-clock-o"></i> 자동 스캔</h5>
+        </div>
+        <div class="card-body">
+          {{ macros.setting_checkbox('auto_enabled', '자동 스캔 활성화', value=arg['auto_enabled']) }}
+          {{ macros.setting_input_text('scan_interval', '스캔 주기 (분, 최소 5)', value=arg['scan_interval']) }}
+          {{ macros.setting_input_text('max_concurrent', '최대 동시 다운로드 수', value=arg['max_concurrent']) }}
+        </div>
+      </div>
+
+      <!-- 알림 설정 -->
+      <div class="card mb-3" style="border: 1px solid #444; background: #2a2a2a;">
+        <div class="card-header" style="background: #333; color: #fff;">
+          <h5 class="mb-0"><i class="fa fa-bell"></i> 디스코드 알림</h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-info">
+            <i class="fa fa-info-circle"></i>
+            다운로드 완료/실패 시 디스코드 웹훅으로 알림을 보냅니다. 비워두면 알림이 비활성화됩니다.
+          </div>
+          {{ macros.setting_input_text('discord_webhook', '디스코드 Webhook URL', value=arg['discord_webhook']) }}
+          <button type="button" class="btn btn-sm btn-outline-info mt-2" id="test_webhook_btn">
+            <i class="fa fa-paper-plane"></i> 테스트 메시지 보내기
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </form>
+</div>
+
+<script type="text/javascript">
+const package_name = "{{ arg['package_name'] }}";
+
+function settingFormData() {
+    const data = $('#setting').serializeArray();
+    ['proxy_enabled', 'auto_enabled'].forEach(function(name) {
+        if (!data.some(item => item.name === name)) {
+            data.push({ name: name, value: 'False' });
+        }
+    });
+    return $.param(data);
+}
+
+$(document).ready(function(){
+    // 저장
+    $(document).on('click', '#global_setting_save_btn', function(e){
+        e.preventDefault();
+        $.ajax({
+            url: '/' + package_name + '/ajax/setting_save',
+            type: 'POST',
+            data: settingFormData(),
+            success: function (data) {
+                if (data) {
+                    $.notify('<strong>저장했습니다.</strong>', {type: 'success'});
+                } else {
+                    $.notify('<strong>저장 실패</strong>', {type: 'warning'});
+                }
+            },
+            error: function() {
+                $.notify('<strong>서버 통신 오류</strong>', {type: 'danger'});
+            }
+        });
+    });
+
+    // 최신 주소 불러오기
+    $(document).on('click', '#global_discover_btn', function(e){
+        e.preventDefault();
+        const btn = $(this);
+        btn.prop('disabled', true);
+        $.ajax({
+            url: '/' + package_name + '/ajax/discover_url',
+            type: 'POST',
+            success: function (data) {
+                if (data && data.ret === 'success') {
+                    $('[name="4khd_url"]').val(data.url);
+                    $.notify('<strong>최신 주소 저장 완료:</strong> ' + data.url, {type: 'success'});
+                } else {
+                    $.notify('<strong>주소 확인 실패</strong>', {type: 'warning'});
+                }
+            },
+            error: function() {
+                $.notify('<strong>서버 통신 오류</strong>', {type: 'danger'});
+            },
+            complete: function() {
+                btn.prop('disabled', false);
+            }
+        });
+    });
+
+    // 디스코드 테스트
+    $('#test_webhook_btn').click(function(e) {
+        e.preventDefault();
+        const url = $('[name="discord_webhook"]').val().trim();
+        if (!url) {
+            $.notify('<strong>Webhook URL을 먼저 입력하세요.</strong>', {type: 'warning'});
+            return;
+        }
+        // 직접 테스트 (서버 거치지 않고 클라이언트에서)
+        $.ajax({
+            url: url,
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                embeds: [{
+                    title: '📦 4KHD Auto — 테스트',
+                    description: '디스코드 알림이 정상적으로 작동합니다! ✅',
+                    color: 0x4fc3f7,
+                    timestamp: new Date().toISOString(),
+                    footer: { text: '4KHD Auto Downloader' }
+                }]
+            }),
+            success: function() {
+                $.notify('<strong>테스트 메시지 전송 완료!</strong>', {type: 'success'});
+            },
+            error: function() {
+                $.notify('<strong>전송 실패 — URL을 확인하세요.</strong>', {type: 'danger'});
+            }
+        });
+    });
+});
+</script>
+{% endblock %}
