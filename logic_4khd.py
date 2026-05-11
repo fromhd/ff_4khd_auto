@@ -59,31 +59,38 @@ class Logic4KHD:
     @staticmethod
     def _discover_url(url):
         """4khd.com에서 실제 게시글/페이지 이동에 쓰이는 호스트를 찾습니다."""
-        if not url:
-            return Logic4KHD.BASE_URL
-        try:
-            session = Logic4KHD.get_session()
-            res = session.get(url, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
-            if res.status_code == 200:
-                if 'wp-block-post-title' in res.text or 'nav-links' in res.text or 'popular' in res.text:
-                    if 'location.href = url;' not in res.text:
-                        return Logic4KHD._base_from_url(res.url) or url
+        candidates = [url, "https://uuss.uk", "https://pbce.uuss.uk", "https://eiyus.ssuu.uk", "https://gghh.uk", "https://4khd.com"]
+        session = Logic4KHD.get_session()
+        
+        html_to_parse = ""
+        final_url = ""
 
-            candidates = Logic4KHD._extract_discovery_candidates(res.text, res.url)
-            for candidate in candidates:
+        for u in candidates:
+            if not u: continue
+            try:
+                res = session.get(u, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
+                if res.status_code == 200:
+                    if 'wp-block-post-title' in res.text or 'nav-links' in res.text or 'popular' in res.text:
+                        if 'location.href = url;' not in res.text:
+                            return Logic4KHD._base_from_url(res.url) or u
+                    if not html_to_parse:
+                        html_to_parse = res.text
+                        final_url = res.url
+            except:
+                continue
+
+        if html_to_parse:
+            extracted = Logic4KHD._extract_discovery_candidates(html_to_parse, final_url)
+            for candidate in extracted:
                 try:
                     moved = session.get(candidate, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
                     if moved.status_code == 200:
                         if 'wp-block-post-title' in moved.text or 'nav-links' in moved.text or 'popular' in moved.text:
                             if 'location.href = url;' not in moved.text:
-                                final_base = Logic4KHD._base_from_url(moved.url)
-                                return final_base
+                                return Logic4KHD._base_from_url(moved.url)
                 except:
                     continue
 
-            final_url = Logic4KHD._base_from_url(res.url)
-            return final_url or url
-        except: pass
         return Logic4KHD.BASE_URL
 
     @staticmethod
