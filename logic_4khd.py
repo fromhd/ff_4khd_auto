@@ -59,7 +59,13 @@ class Logic4KHD:
     @staticmethod
     def _discover_url(url):
         """4khd.com에서 실제 게시글/페이지 이동에 쓰이는 호스트를 찾습니다."""
-        candidates = [url, "https://uuss.uk", "https://pbce.uuss.uk", "https://eiyus.ssuu.uk", "https://gghh.uk", "https://4khd.com"]
+        # 미러 사이트가 CF 우회 및 API 접근에 훨씬 유리하므로 우선적으로 탐색
+        candidates = ["https://uuss.uk", "https://eiyus.ssuu.uk", "https://pbce.uuss.uk", "https://gghh.uk"]
+        if url and url not in candidates:
+            candidates.append(url)
+        if "https://4khd.com" not in candidates:
+            candidates.append("https://4khd.com")
+            
         session = Logic4KHD.get_session()
         
         html_to_parse = ""
