@@ -61,22 +61,23 @@ class Logic4KHD:
         """4khd.com에서 실제 게시글/페이지 이동에 쓰이는 호스트를 찾습니다."""
         if not url:
             return Logic4KHD.BASE_URL
-        if '4khd.com' not in url:
-            return url
         try:
             session = Logic4KHD.get_session()
             res = session.get(url, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
-            if res.status_code != 200:
-                return Logic4KHD.BASE_URL
+            if res.status_code == 200:
+                if 'wp-block-post-title' in res.text or 'nav-links' in res.text or 'popular' in res.text:
+                    if 'location.href = url;' not in res.text:
+                        return Logic4KHD._base_from_url(res.url) or url
 
             candidates = Logic4KHD._extract_discovery_candidates(res.text, res.url)
             for candidate in candidates:
                 try:
                     moved = session.get(candidate, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
                     if moved.status_code == 200:
-                        final_base = Logic4KHD._base_from_url(moved.url)
-                        if final_base and '4khd.com' not in final_base:
-                            return final_base
+                        if 'wp-block-post-title' in moved.text or 'nav-links' in moved.text or 'popular' in moved.text:
+                            if 'location.href = url;' not in moved.text:
+                                final_base = Logic4KHD._base_from_url(moved.url)
+                                return final_base
                 except:
                     continue
 
@@ -93,24 +94,9 @@ class Logic4KHD:
 
     @staticmethod
     def discover_url(url=None):
-        """API 엔드포인트로 접속 가능한 주소를 확인합니다."""
-        candidates = [
-            'https://uuss.uk',
-            'https://gghh.uk',
-            'https://4khd.com',
-        ]
-        if url and url not in candidates:
-            candidates.insert(0, url)
-        session = Logic4KHD.get_session()
-        for base in candidates:
-            try:
-                api = f"{base.rstrip('/')}/wp-json/wp/v2/posts?per_page=1"
-                res = session.get(api, headers=Logic4KHD.HEADERS, timeout=10)
-                if res.status_code == 200:
-                    return base
-            except:
-                continue
-        return Logic4KHD.BASE_URL
+        """Return the currently reachable 4KHD mirror URL after redirects."""
+        start_url = url or "https://4khd.com"
+        return Logic4KHD._discover_url(start_url)
 
     @staticmethod
     def _base_from_url(url):
@@ -140,6 +126,15 @@ class Logic4KHD:
         candidates.append(urljoin(base_url, '/?query-3-page=2'))
         candidates.append(urljoin(base_url, '/page/2/'))
         candidates.append('https://gghh.uk/')
+
+        import re
+        for match in re.finditer(r"['\"](https?://[^'\"]+)['\"]", html):
+            url = match.group(1)
+            if any(x in url for x in ['uuss.uk', 'ssuu.uk', '4khd.com', 'gghh.uk']):
+                candidate = Logic4KHD._safe_discovery_candidate(url, base_url)
+                if candidate:
+                    candidates.append(candidate)
+
         unique = []
         for candidate in candidates:
             parsed = urlparse(candidate)
@@ -161,9 +156,13 @@ class Logic4KHD:
         query = parsed.query.lower()
         if host == base_host or host.endswith('.4khd.com') or host == '4khd.com':
             return candidate
+        if host.endswith('.uuss.uk') or host == 'uuss.uk':
+            return candidate
+        if host.endswith('.ssuu.uk') or host == 'ssuu.uk':
+            return candidate
         if host in ['gghh.uk'] or host.endswith('.gghh.uk'):
             return candidate
-        if any(token in path for token in ['/content/', '/page/']) or 'query-3-page' in query:
+        if any(token in path for token in ['/content/', '/page/', '/pages/']) or 'query-3-page' in query:
             return candidate
         return None
 
@@ -254,10 +253,13 @@ class Logic4KHD:
                 urls.append(f"{base_url}/?s={search}")
         elif category:
             if page > 1:
-                urls.append(f"{base_url}/{category}/?query-3-page={page}")
+                urls.append(f"{base_url}/pages/{category}?query-3-page={page}")
+                urls.append(f"{base_url}/{category}?query-3-page={page}")
+                urls.append(f"{base_url}/pages/{category}/page/{page}/")
                 urls.append(f"{base_url}/{category}/page/{page}/")
-                urls.append(f"{base_url}/{category}/?paged={page}")
+                urls.append(f"{base_url}/pages/{category}?paged={page}")
             else:
+                urls.append(f"{base_url}/pages/{category}")
                 urls.append(f"{base_url}/{category}/")
         else:
             if page > 1:
@@ -297,11 +299,16 @@ class Logic4KHD:
                                  img_tag.get('srcset') or img_tag.get('src', ''))
                         if ',' in thumb: thumb = thumb.split(',')[0].split(' ')[0]
 
+                    url_href = title_tag['href']
+                    parsed_href = urlparse(url_href)
+                    if '4khd.com' in parsed_href.netloc:
+                        url_href = url_href.replace(parsed_href.scheme + '://' + parsed_href.netloc, base_url)
+
                     item = {
                         'title': title_tag.get_text(strip=True),
-                        'url': title_tag['href'],
+                        'url': url_href,
                         'thumbnail': Logic4KHD.normalize_image_url(thumb, for_thumbnail=True),
-                        'id': title_tag['href'].strip('/').split('/')[-1],
+                        'id': url_href.strip('/').split('/')[-1],
                         'images': [],  # HTML 파싱에서는 이미지 없음
                     }
                     if not any(r['id'] == item['id'] for r in results):
@@ -361,8 +368,12 @@ class Logic4KHD:
             page_links = soup.select('.page-links a, .post-page-numbers a, .pagination a')
             for link in page_links:
                 href = link.get('href')
-                if href and href not in page_urls:
-                    page_urls.append(href)
+                if href:
+                    parsed_href = urlparse(href)
+                    if '4khd.com' in parsed_href.netloc:
+                        href = href.replace(parsed_href.scheme + '://' + parsed_href.netloc, base_url)
+                    if href not in page_urls:
+                        page_urls.append(href)
             page_urls = sorted(list(set(page_urls)))
 
             for p_url in page_urls:
