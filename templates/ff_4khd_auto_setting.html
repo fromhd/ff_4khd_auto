@@ -115,7 +115,7 @@ $(document).ready(function(){
         });
     });
 
-    // 디스코드 테스트
+    // 디스코드 테스트 (백엔드를 통해 전송하여 브라우저 CORS 문제 해결)
     $('#test_webhook_btn').click(function(e) {
         e.preventDefault();
         const url = $('[name="discord_webhook"]').val().trim();
@@ -123,25 +123,24 @@ $(document).ready(function(){
             $.notify('<strong>Webhook URL을 먼저 입력하세요.</strong>', {type: 'warning'});
             return;
         }
-        // 직접 테스트 (서버 거치지 않고 클라이언트에서)
+        const btn = $(this);
+        btn.prop('disabled', true);
         $.ajax({
-            url: url,
+            url: '/' + package_name + '/ajax/test_discord',
             type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({
-                embeds: [{
-                    title: '📦 4KHD Auto — 테스트',
-                    description: '디스코드 알림이 정상적으로 작동합니다! ✅',
-                    color: 0x4fc3f7,
-                    timestamp: new Date().toISOString(),
-                    footer: { text: '4KHD Auto Downloader' }
-                }]
-            }),
-            success: function() {
-                $.notify('<strong>테스트 메시지 전송 완료!</strong>', {type: 'success'});
+            data: { url: url },
+            success: function(data) {
+                if (data && data.ret === 'success') {
+                    $.notify('<strong>' + data.msg + '</strong>', {type: 'success'});
+                } else {
+                    $.notify('<strong>' + (data.msg || '전송 실패') + '</strong>', {type: 'danger'});
+                }
             },
             error: function() {
-                $.notify('<strong>전송 실패 — URL을 확인하세요.</strong>', {type: 'danger'});
+                $.notify('<strong>서버 통신 오류</strong>', {type: 'danger'});
+            },
+            complete: function() {
+                btn.prop('disabled', false);
             }
         });
     });

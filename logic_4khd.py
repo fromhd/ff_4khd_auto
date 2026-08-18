@@ -5,7 +5,7 @@ import json
 from urllib.parse import urljoin, urlparse
 
 class Logic4KHD:
-    BASE_URL = "https://uuss.uk"
+    BASE_URL = "https://iftye.uuss.uk"
     API_URL = f"{BASE_URL}/wp-json/wp/v2/posts"
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -57,62 +57,86 @@ class Logic4KHD:
         return url
 
     @staticmethod
-    def _discover_url(url):
-        """4khd.com에서 실제 게시글/페이지 이동에 쓰이는 호스트를 찾습니다."""
-        # 미러 사이트가 CF 우회 및 API 접근에 훨씬 유리하므로 우선적으로 탐색
-        candidates = ["https://uuss.uk", "https://eiyus.ssuu.uk", "https://pbce.uuss.uk", "https://gghh.uk"]
+    def is_valid_base_url(url):
+        """실제 게시글/REST API가 동작하는 활성 미러 주소인지 검증합니다."""
+        if not url or not url.startswith('http'):
+            return False
+        base = url.rstrip('/')
+        session = Logic4KHD.get_session()
+        try:
+            # 1. WP REST API 검증
+            api_url = f"{base}/wp-json/wp/v2/posts?per_page=1"
+            res = session.get(api_url, headers=Logic4KHD.HEADERS, timeout=8)
+            if res.status_code == 200:
+                try:
+                    data = res.json()
+                    if isinstance(data, list) and len(data) > 0 and 'id' in data[0]:
+                        return True
+                except:
+                    pass
+
+            # 2. HTML 메인 페이지 검증 (자바스크립트 점핑 페이지 제외)
+            res_html = session.get(base, headers=Logic4KHD.HEADERS, timeout=8)
+            if res_html.status_code == 200:
+                text = res_html.text
+                if 'location.href' in text or 'testSite(' in text:
+                    return False
+                if 'wp-block-post' in text or 'entry-title' in text or 'nav-links' in text:
+                    return True
+        except:
+            pass
+        return False
+
+    @staticmethod
+    def _discover_url(url=None):
+        """4khd.com에서 실제 게시글/페이지 이동에 쓰이는 활성 미러 호스트를 찾습니다."""
+        candidates = [
+            "https://iftye.uuss.uk",
+            "https://jchd.ssuu.uk",
+            "https://eiyus.ssuu.uk",
+            "https://pbce.uuss.uk",
+            "https://gghh.uk",
+            "https://uuss.uk",
+            "https://4khd.com"
+        ]
         if url and url not in candidates:
-            candidates.append(url)
-        if "https://4khd.com" not in candidates:
-            candidates.append("https://4khd.com")
+            candidates.insert(0, url)
             
         session = Logic4KHD.get_session()
-        
-        html_to_parse = ""
-        final_url = ""
 
-        for u in candidates:
-            if not u: continue
+        # 점핑 페이지(uuss.uk, 4khd.com 등)에서 동적 미러 목록 추출
+        seed_urls = ["https://uuss.uk", "https://4khd.com"]
+        for seed in seed_urls:
             try:
-                res = session.get(u, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
-                if res.status_code == 200:
-                    if 'wp-block-post-title' in res.text or 'nav-links' in res.text or 'popular' in res.text:
-                        if 'location.href = url;' not in res.text:
-                            return Logic4KHD._base_from_url(res.url) or u
-                    if not html_to_parse:
-                        html_to_parse = res.text
-                        final_url = res.url
+                res = session.get(seed, headers=Logic4KHD.HEADERS, timeout=8, allow_redirects=True)
+                if res.status_code == 200 and res.text:
+                    # 'https://...uuss.uk' 등의 패턴 추출
+                    extracted = re.findall(r"['\"](https?://[a-zA-Z0-9.-]+\.(?:uuss|ssuu|4khd|gghh)\.uk)['\"]", res.text)
+                    for ext_url in extracted:
+                        if ext_url not in candidates:
+                            candidates.insert(0, ext_url)
+            except:
+                pass
+
+        # 후보군 중 실제 유효한 미러 탐색
+        for candidate in candidates:
+            if not candidate: continue
+            try:
+                if Logic4KHD.is_valid_base_url(candidate):
+                    return Logic4KHD._base_from_url(candidate) or candidate
             except:
                 continue
-
-        if html_to_parse:
-            extracted = Logic4KHD._extract_discovery_candidates(html_to_parse, final_url)
-            for candidate in extracted:
-                try:
-                    moved = session.get(candidate, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
-                    if moved.status_code == 200:
-                        if 'wp-block-post-title' in moved.text or 'nav-links' in moved.text or 'popular' in moved.text:
-                            if 'location.href = url;' not in moved.text:
-                                return Logic4KHD._base_from_url(moved.url)
-                except:
-                    continue
 
         return Logic4KHD.BASE_URL
 
     @staticmethod
-    def is_supported_base_url(url):
-        """사용자가 저장한 URL이면 무조건 유효로 판단"""
-        parsed = urlparse(url or '')
-        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
-
-    @staticmethod
     def discover_url(url=None):
-        """Return the currently reachable 4KHD mirror URL after redirects."""
-        start_url = url or "https://4khd.com"
-        return Logic4KHD._discover_url(start_url)
+        """Return the currently reachable 4KHD mirror URL after testing."""
+        return Logic4KHD._discover_url(url)
 
     @staticmethod
     def _base_from_url(url):
+        if not url: return None
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             return None
