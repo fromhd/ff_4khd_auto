@@ -212,13 +212,24 @@ class ModuleMain(PluginModuleBase):
                 post_id = req.form.get('post_id', '')
                 if not url:
                     return jsonify({'ret': 'error', 'msg': 'URL이 없습니다.'})
-                target_path = self.P.ModelSetting.get('download_path')
+                base_target_path = self.P.ModelSetting.get('download_path')
+                
+                # 기존 히스토리에서 키워드 및 제목 조회
+                history = self._get_history()
+                hist_item = next((h for h in history if str(h.get('post_id')) == str(post_id)), {})
+                kw = hist_item.get('keyword', '수동')
+                saved_title = hist_item.get('title', '')
+
+                safe_keyword = "".join([c for c in kw if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+                target_path = os.path.join(base_target_path, safe_keyword) if safe_keyword else base_target_path
                 if not os.path.exists(target_path):
                     os.makedirs(target_path, exist_ok=True)
-                # 재다운로드는 get_detail 폴백 사용
+
+                # 재다운로드는 get_detail 폴백 사용 (기존 파일 덮어쓰기 force=True)
                 threading.Thread(
                     target=self._download_images,
-                    args=(post_id, '수동', url, [], target_path, True),
+                    args=(post_id, kw, url, [], target_path, True),
+                    kwargs={'title_override': saved_title},
                     daemon=True
                 ).start()
                 return jsonify({'ret': 'success', 'msg': '재다운로드를 시작합니다.'})
@@ -281,7 +292,11 @@ class ModuleMain(PluginModuleBase):
         self.P.logger.info(f'[4KHD-Auto] 키워드 스캔: "{keyword}" (과거포함: {include_old})')
 
         base_url = self._get_effective_base_url()
-        target_path = self.P.ModelSetting.get('download_path')
+        base_target_path = self.P.ModelSetting.get('download_path')
+        
+        # 키워드별 서브폴더 경로 생성 (예: downloads/ff_4khd_auto/민하린/)
+        safe_keyword = "".join([c for c in keyword if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+        target_path = os.path.join(base_target_path, safe_keyword) if safe_keyword else base_target_path
         if not os.path.exists(target_path):
             os.makedirs(target_path, exist_ok=True)
 
@@ -342,7 +357,7 @@ class ModuleMain(PluginModuleBase):
             except:
                 max_concurrent = 5
 
-            self.P.logger.info(f'[4KHD-Auto] 다운로드 시작 (동시 다운로드 수: {max_concurrent})')
+            self.P.logger.info(f'[4KHD-Auto] 다운로드 시작 (동시 다운로드 수: {max_concurrent}, 저장 경로: {target_path})')
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
                 futures = []
                 for idx, item in enumerate(download_queue):
@@ -378,6 +393,7 @@ class ModuleMain(PluginModuleBase):
         try:
             import zipfile
             import shutil
+            import html
             from io import BytesIO
             try:
                 from PIL import Image
@@ -385,17 +401,18 @@ class ModuleMain(PluginModuleBase):
                 Image = None
 
             title = title_override or str(post_id)
+            title = html.unescape(title).strip()
 
             # 이미지 목록이 없으면 get_detail 폴백 (재다운로드 등)
             if not images:
-                self.P.logger.info(f'[4KHD-Auto] 이미지 없음, get_detail 폴백: {post_id}')
+                self.P.logger.info(f'[4KHD-Auto] 이미지 목록 없음, get_detail 폴백: {post_id}')
                 with self._status_lock:
                     self._download_status[post_id] = {'current': 0, 'total': 0, 'status': 'fetching'}
                 data = None
                 for attempt in range(3):
                     try:
                         data = Logic4KHD.get_detail(url)
-                        if data:
+                        if data and data.get('images'):
                             break
                     except:
                         pass
@@ -410,23 +427,40 @@ class ModuleMain(PluginModuleBase):
                         self._download_status[post_id] = {'status': 'error', 'msg': '이미지 추출 실패'}
                     return
                 images = data['images']
-                title = data.get('title', title)
+                
+                # title이 부실할 때만 detail 제목 사용
+                detail_title = html.unescape(data.get('title', '')).strip()
+                if (not title or title == str(post_id) or title.lower() == '4khd') and detail_title and detail_title.lower() != '4khd':
+                    title = detail_title
+
+            if not title or title.lower() == '4khd':
+                title = f"{keyword}_{post_id}"
 
             self.P.logger.info(f'[4KHD-Auto] 다운로드 시작: {title} ({len(images)}장)')
 
             # 안전한 파일명 생성 (길이 제한 100자, 마침표/공백 정리)
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
-            safe_title = safe_title[:100].rstrip('. ')
-            if not safe_title:
-                safe_title = str(post_id)
+            base_safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '.', '_', '-')]).strip()[:100].rstrip('. ')
+            if not base_safe_title or base_safe_title.lower() == '4khd':
+                base_safe_title = f"{keyword}_{post_id}"
             
-            zip_file_path = os.path.join(target_path, f"{safe_title}.zip")
+            zip_file_path = os.path.join(target_path, f"{base_safe_title}.zip")
+            safe_title = base_safe_title
 
-            # 중복 체크
-            if not force and os.path.exists(zip_file_path):
-                self.P.logger.info(f'[4KHD-Auto] 이미 존재: {zip_file_path}')
-                self._record_history(post_id, url, title, keyword, 'completed', zip_file_path)
-                return
+            # 중복 파일명 처리 (force가 아닌 경우 넘버링 추가)
+            if not force:
+                if os.path.exists(zip_file_path):
+                    # 이미 완료된 기록이 있으면 스킵
+                    if self._is_downloaded(str(post_id)):
+                        self.P.logger.info(f'[4KHD-Auto] 이미 존재: {zip_file_path}')
+                        self._record_history(post_id, url, title, keyword, 'completed', zip_file_path)
+                        return
+                    
+                    # 다른 게시물과 파일명이 겹칠 경우 (1), (2)... 부여
+                    counter = 1
+                    while os.path.exists(os.path.join(target_path, f"{base_safe_title} ({counter}).zip")):
+                        counter += 1
+                    safe_title = f"{base_safe_title} ({counter})"
+                    zip_file_path = os.path.join(target_path, f"{safe_title}.zip")
 
             temp_folder = os.path.join(target_path, f"temp_{post_id}_{safe_title[:30]}")
             if not os.path.exists(temp_folder):

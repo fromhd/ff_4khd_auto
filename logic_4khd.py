@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import json
+import html
 from urllib.parse import urljoin, urlparse
 
 class Logic4KHD:
@@ -237,9 +238,11 @@ class Logic4KHD:
                         if norm and norm not in all_images:
                             all_images.append(norm)
 
+                    raw_title = post.get('title', {}).get('rendered', '')
+                    clean_title = html.unescape(raw_title).strip()
                     item = {
                         'id': post['id'],
-                        'title': post['title']['rendered'],
+                        'title': clean_title or str(post['id']),
                         'url': post['link'],
                         'thumbnail': '',
                         'images': all_images,  # ★ API에서 직접 추출한 이미지 목록
@@ -363,6 +366,13 @@ class Logic4KHD:
         try:
             if session is None:
                 session = Logic4KHD.get_session()
+
+            # 4khd.com 직접 접근 차단 대응: 활성 미러 URL로 치환
+            parsed_input = urlparse(url)
+            mirror_base = Logic4KHD.BASE_URL.rstrip('/')
+            if '4khd.com' in parsed_input.netloc:
+                url = url.replace(f"{parsed_input.scheme}://{parsed_input.netloc}", mirror_base)
+
             base_url = url.rstrip('/')
 
             def get_page_data(target_url):
@@ -389,13 +399,34 @@ class Logic4KHD:
                 print(f"[4KHD] get_detail: failed to load page: {url}")
                 return None
 
-            title_el = soup.select_one('.wp-block-post-title, .entry-title, h1.post-title, h1')
-            if not title_el:
-                print(f"[4KHD] get_detail: no title element found for {url}")
-                return None
+            # 제목 추출 로직 (사이트 로고 '4KHD' 오인식 방지)
+            extracted_title = ''
+            title_el = soup.select_one('.wp-block-post-title, .entry-title, h1.post-title, h1.entry-title, h2.entry-title')
+            if title_el:
+                t = title_el.get_text(strip=True)
+                if t.lower() != '4khd' and len(t) > 3:
+                    extracted_title = t
+
+            if not extracted_title and soup.title:
+                t = soup.title.get_text(strip=True)
+                t = re.sub(r'\s*[-|_]\s*4KHD.*$', '', t, flags=re.IGNORECASE).strip()
+                if t.lower() != '4khd' and len(t) > 3:
+                    extracted_title = t
+
+            if not extracted_title:
+                for h1 in soup.select('h1, h2'):
+                    t = h1.get_text(strip=True)
+                    if t.lower() != '4khd' and len(t) > 3 and not any(kw in t.lower() for kw in ['popular', 'cosplay', 'album', 'how to download']):
+                        extracted_title = t
+                        break
+
+            if not extracted_title:
+                extracted_title = url.strip('/').split('/')[-1].replace('.html', '').replace('-', ' ')
+
+            extracted_title = html.unescape(extracted_title).strip()
 
             data = {
-                'title': title_el.get_text(strip=True),
+                'title': extracted_title,
                 'images': [],
                 'videos': [],
                 'downloads': []
