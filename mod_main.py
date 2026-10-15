@@ -477,6 +477,11 @@ class ModuleMain(PluginModuleBase):
                     try:
                         res = session.get(img_url, headers=Logic4KHD.HEADERS, timeout=30)
                         if res.status_code == 200:
+                            content_type = res.headers.get('Content-Type', '')
+                            # HTML 응답(Cloudflare 챌린지 등)이 오면 이미지가 아니므로 스킵
+                            if 'text/html' in content_type:
+                                self.P.logger.warning(f'[4KHD-Auto] 이미지 URL이 HTML 반환 (스킵): {img_url}')
+                                break
                             file_path = os.path.join(temp_folder, f"{idx+1:03d}.jpg")
                             if Image and not img_url.lower().endswith('.gif'):
                                 img = Image.open(BytesIO(res.content))

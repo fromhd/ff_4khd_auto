@@ -42,6 +42,11 @@ class Logic4KHD:
         if not url: return url
         url = url.replace('\\/', '/').replace('&amp;', '&').strip()
 
+        # img.uuss.uk는 HTML 리다이렉트 페이지를 반환하므로 img.4khd.com으로 교체
+        if 'img.uuss.uk' in url:
+            url = url.replace('img.uuss.uk', 'img.4khd.com')
+            return url
+
         # Jetpack 프록시 우회 및 CDN 매핑
         if 'pic.4khd.com' in url:
             mapped_url = url
@@ -49,8 +54,8 @@ class Logic4KHD:
             elif 'i1.wp.com/' in url: mapped_url = url.split('i1.wp.com/')[-1]
             elif 'i2.wp.com/' in url: mapped_url = url.split('i2.wp.com/')[-1]
 
-            target_host = "img.4khd.com" if for_thumbnail else "img.uuss.uk"
-            mapped_url = mapped_url.replace('pic.4khd.com', target_host)
+            # 썸네일/상세 모두 img.4khd.com 사용 (img.uuss.uk는 HTML 반환으로 차단됨)
+            mapped_url = mapped_url.replace('pic.4khd.com', 'img.4khd.com')
             if not mapped_url.startswith('http'):
                 mapped_url = 'https://' + mapped_url
             return mapped_url
