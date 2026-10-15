@@ -603,16 +603,10 @@ class ModuleMain(PluginModuleBase):
 
     def _get_effective_base_url(self):
         base_url = self.P.ModelSetting.get('4khd_url') or Logic4KHD.BASE_URL
-        # 저장된 주소가 정상 작동하는 활성 미러인지 확인
-        if base_url and Logic4KHD.is_valid_base_url(base_url):
+        # 저장된 URL이 유효하면 바로 사용 (매 요청마다 검증하지 않음)
+        if base_url and 'http' in base_url:
             return base_url
-
-        # 주소가 유효하지 않으면 활성 미러 주소 자동 탐색 및 저장
-        self.P.logger.info(f'[4KHD-Auto] 주소 갱신 필요: {base_url} -> 활성 미러 자동 탐색...')
-        discovered_url = Logic4KHD.discover_url()
-        self.P.logger.info(f'[4KHD-Auto] 새 활성 미러 주소 발견: {discovered_url}')
-        self._set_setting('4khd_url', discovered_url)
-        return discovered_url
+        return Logic4KHD.BASE_URL
 
     def _make_proxy_url(self, target):
         return f"/{self.P.package_name}/normal/proxy?url={urllib.parse.quote(target)}"
