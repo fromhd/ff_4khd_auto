@@ -240,8 +240,10 @@ class Logic4KHD:
 
                     raw_title = post.get('title', {}).get('rendered', '')
                     clean_title = html.unescape(raw_title).strip()
+                    url_slug = post.get('link', '').strip('/').split('/')[-1] if post.get('link') else str(post['id'])
                     item = {
                         'id': post['id'],
+                        'slug': url_slug,
                         'title': clean_title or str(post['id']),
                         'url': post['link'],
                         'thumbnail': '',
@@ -269,8 +271,15 @@ class Logic4KHD:
                     results.append(item)
                 return results
 
+            # page > 1에서 REST API가 200이 아니면 (예: 400 rest_post_invalid_page_number 등 마지막 페이지 초과)
+            # HTML 파서로 넘어가서 첫 페이지를 다시 중복 수집하는 것을 방지
+            if page > 1:
+                return []
+
             return Logic4KHD.parse_html_list(real_base, page, search, category)
         except Exception:
+            if page > 1:
+                return []
             return Logic4KHD.parse_html_list(real_base, page, search, category)
 
     @staticmethod
@@ -380,7 +389,9 @@ class Logic4KHD:
             mirror_base = Logic4KHD.BASE_URL.rstrip('/')
             if '4khd.com' in parsed_input.netloc:
                 url = url.replace(f"{parsed_input.scheme}://{parsed_input.netloc}", mirror_base)
+                parsed_input = urlparse(url)
 
+            root_base = f"{parsed_input.scheme}://{parsed_input.netloc}".rstrip('/')
             base_url = url.rstrip('/')
 
             def get_page_data(target_url):
@@ -406,12 +417,14 @@ class Logic4KHD:
             # 만약 현재 base_url에서 404가 발생하면 최신 활성 미러로 URL 교체 후 재시도
             if not soup:
                 active_base = Logic4KHD.discover_url()
-                if active_base and active_base != base_url:
+                if active_base and active_base != root_base:
                     parsed_orig = urlparse(url)
                     fallback_url = url.replace(f"{parsed_orig.scheme}://{parsed_orig.netloc}", active_base)
                     soup = get_page_data(fallback_url)
                     if soup:
                         url = fallback_url
+                        parsed_input = urlparse(url)
+                        root_base = f"{parsed_input.scheme}://{parsed_input.netloc}".rstrip('/')
                         base_url = active_base
 
             if not soup:
@@ -458,7 +471,12 @@ class Logic4KHD:
                 if href:
                     parsed_href = urlparse(href)
                     if '4khd.com' in parsed_href.netloc:
-                        href = href.replace(parsed_href.scheme + '://' + parsed_href.netloc, base_url)
+                        href = href.replace(f"{parsed_href.scheme}://{parsed_href.netloc}", root_base)
+                    elif not parsed_href.netloc:
+                        from urllib.parse import urljoin
+                        href = urljoin(root_base, href)
+                    elif parsed_href.netloc != parsed_input.netloc:
+                        href = href.replace(f"{parsed_href.scheme}://{parsed_href.netloc}", root_base)
                     if href not in page_urls:
                         page_urls.append(href)
             page_urls = sorted(list(set(page_urls)))

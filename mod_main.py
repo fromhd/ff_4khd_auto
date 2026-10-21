@@ -65,9 +65,22 @@ class ModuleMain(PluginModuleBase):
         with self._db_lock:
             self._set_setting('history_json', json.dumps(history, ensure_ascii=False))
 
-    def _is_downloaded(self, post_id):
+    def _is_downloaded(self, post_id, url=None, title=None):
         history = self._get_history()
-        return any(str(h.get('post_id')) == str(post_id) and h.get('status') == 'completed' for h in history)
+        slug = url.strip('/').split('/')[-1] if url else None
+        for h in history:
+            if h.get('status') != 'completed':
+                continue
+            h_id = str(h.get('post_id'))
+            h_url = h.get('url', '')
+            h_slug = h_url.strip('/').split('/')[-1] if h_url else ''
+            if h_id == str(post_id):
+                return True
+            if url and h_url and (h_url == url or (slug and h_slug and slug == h_slug)):
+                return True
+            if title and h.get('title') and h.get('title') == title:
+                return True
+        return False
 
     def _set_setting(self, key, value):
         if hasattr(self.P.ModelSetting, 'set'):
@@ -323,11 +336,13 @@ class ModuleMain(PluginModuleBase):
                     post_id = item.get('id', item.get('url', '').strip('/').split('/')[-1])
                     if keyword.lower() not in item.get('title', '').lower():
                         continue
-                    if not self._is_downloaded(str(post_id)):
+                    item_url = item.get('url', '')
+                    item_title = item.get('title', '')
+                    if not self._is_downloaded(str(post_id), url=item_url, title=item_title):
                         download_queue.append({
                             'post_id': str(post_id),
-                            'title': item.get('title', ''),
-                            'url': item.get('url', ''),
+                            'title': item_title,
+                            'url': item_url,
                             'images': item.get('images', []),
                         })
                         new_count += 1
@@ -449,18 +464,28 @@ class ModuleMain(PluginModuleBase):
             # 중복 파일명 처리 (force가 아닌 경우 넘버링 추가)
             if not force:
                 if os.path.exists(zip_file_path):
-                    # 이미 완료된 기록이 있으면 스킵
-                    if self._is_downloaded(str(post_id)):
-                        self.P.logger.info(f'[4KHD-Auto] 이미 존재: {zip_file_path}')
+                    file_size = 0
+                    try:
+                        file_size = os.path.getsize(zip_file_path)
+                    except:
+                        pass
+                    # 이미 정상 크기(100KB 이상) 파일이 존재하거나 히스토리에 완료 기록이 있으면 스킵
+                    if file_size > 102400 or self._is_downloaded(str(post_id), url=url, title=title):
+                        self.P.logger.info(f'[4KHD-Auto] 이미 정상 파일 존재하여 스킵: {zip_file_path} ({file_size} bytes)')
                         self._record_history(post_id, url, title, keyword, 'completed', zip_file_path)
                         return
-                    
-                    # 다른 게시물과 파일명이 겹칠 경우 (1), (2)... 부여
-                    counter = 1
-                    while os.path.exists(os.path.join(target_path, f"{base_safe_title} ({counter}).zip")):
-                        counter += 1
-                    safe_title = f"{base_safe_title} ({counter})"
-                    zip_file_path = os.path.join(target_path, f"{safe_title}.zip")
+                    elif file_size <= 102400:
+                        # 손상되거나 비어있는 불완전한 파일(22바이트 등)은 삭제하고 재시도
+                        try:
+                            os.remove(zip_file_path)
+                        except:
+                            pass
+                    else:
+                        counter = 1
+                        while os.path.exists(os.path.join(target_path, f"{base_safe_title} ({counter}).zip")):
+                            counter += 1
+                        safe_title = f"{base_safe_title} ({counter})"
+                        zip_file_path = os.path.join(target_path, f"{safe_title}.zip")
 
             temp_folder = os.path.join(target_path, f"temp_{post_id}_{safe_title[:30]}")
             if not os.path.exists(temp_folder):
@@ -533,6 +558,14 @@ class ModuleMain(PluginModuleBase):
                 self._send_discord('❌ 다운로드 실패', f'**{title}**\n키워드: `{keyword}`\n이미지 다운 실패', 0xFF0000)
 
         except Exception as e:
+            # 에러 발생 시 불완전한 빈 ZIP 파일(22바이트 등) 삭제
+            try:
+                if os.path.exists(zip_file_path) and os.path.getsize(zip_file_path) < 10240:
+                    os.remove(zip_file_path)
+            except:
+                pass
+            if os.path.exists(temp_folder):
+                shutil.rmtree(temp_folder, ignore_errors=True)
             with self._status_lock:
                 self._download_status[post_id] = {'status': 'error', 'msg': str(e)}
             self._record_history(post_id, url, title_override or str(post_id), keyword, 'failed', str(e))
