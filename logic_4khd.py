@@ -38,27 +38,24 @@ class Logic4KHD:
 
     @staticmethod
     def normalize_image_url(url, for_thumbnail=False):
-        """이미지 URL 정규화 (Tachiyomi 로직 반영)"""
-        if not url: return url
+        """이미지 URL 정규화 (WordPress Jetpack CDN 경유로 국내 차단 우회)"""
+        if not url:
+            return url
         url = url.replace('\\/', '/').replace('&amp;', '&').strip()
 
-        # img.uuss.uk는 HTML 리다이렉트 페이지를 반환하므로 img.4khd.com으로 교체
-        if 'img.uuss.uk' in url:
-            url = url.replace('img.uuss.uk', 'img.4khd.com')
+        # 4khd 이미지 도메인들은 국내에서 SNI 차단되므로 WordPress Jetpack CDN(i0.wp.com)으로 통일
+        for blocked_host in ['img.uuss.uk', 'img.4khd.com', 'zy.4khd.com']:
+            url = url.replace(blocked_host, 'pic.4khd.com')
+
+        # 이미 i0.wp.com, i1.wp.com 등이 붙어있으면 그대로 사용
+        if 'wp.com/' in url:
+            if not url.startswith('http'):
+                url = 'https://' + url.lstrip('/')
             return url
 
-        # Jetpack 프록시 우회 및 CDN 매핑
         if 'pic.4khd.com' in url:
-            mapped_url = url
-            if 'i0.wp.com/' in url: mapped_url = url.split('i0.wp.com/')[-1]
-            elif 'i1.wp.com/' in url: mapped_url = url.split('i1.wp.com/')[-1]
-            elif 'i2.wp.com/' in url: mapped_url = url.split('i2.wp.com/')[-1]
-
-            # 썸네일/상세 모두 img.4khd.com 사용 (img.uuss.uk는 HTML 반환으로 차단됨)
-            mapped_url = mapped_url.replace('pic.4khd.com', 'img.4khd.com')
-            if not mapped_url.startswith('http'):
-                mapped_url = 'https://' + mapped_url
-            return mapped_url
+            clean = re.sub(r'^https?://', '', url)
+            return f"https://i0.wp.com/{clean}"
 
         return url
 
