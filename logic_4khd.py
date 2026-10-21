@@ -63,45 +63,74 @@ class Logic4KHD:
         return url
 
     @staticmethod
+    def _verify_mirror(base_candidate, session):
+        """미러 후보가 실제로 게시글 상세 페이지를 200으로 반환하는지 검증"""
+        try:
+            res = session.get(base_candidate, headers=Logic4KHD.HEADERS, timeout=8, allow_redirects=True)
+            if res.status_code != 200:
+                return None
+            if 'location.href = url;' in res.text:
+                return None
+            if not ('wp-block-post-title' in res.text or 'nav-links' in res.text or 'popular' in res.text):
+                return None
+
+            soup = BeautifulSoup(res.text, 'html.parser')
+            a = soup.select_one('li.wp-block-post h2 a, article h2 a, .entry-title a, .wp-block-post-title a')
+            if not a or not a.get('href'):
+                return Logic4KHD._base_from_url(res.url) or base_candidate
+
+            post_href = a.get('href')
+            parsed_href = urlparse(post_href)
+            if '4khd.com' in parsed_href.netloc:
+                target_detail = post_href.replace(f"{parsed_href.scheme}://{parsed_href.netloc}", base_candidate)
+            else:
+                target_detail = urljoin(base_candidate, post_href)
+
+            det_res = session.get(target_detail, headers=Logic4KHD.HEADERS, timeout=8, allow_redirects=True)
+            if det_res.status_code == 200 and 'location.href = url;' not in det_res.text:
+                return Logic4KHD._base_from_url(base_candidate) or base_candidate
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def _discover_url(url=None):
-        """4khd 활성 미러 호스트를 찾습니다 (ff_4khd와 동일한 안정적인 방식)."""
-        candidates = ["https://uuss.uk", "https://eiyus.ssuu.uk", "https://pbce.uuss.uk", "https://gghh.uk"]
+        """4khd 활성 미러 호스트를 찾습니다."""
+        candidates = ["https://uuss.uk", "https://wrtm.ssuu.uk", "https://htpyz.uuss.uk", "https://gghh.uk", "https://4khd.com"]
         if url and url not in candidates:
             candidates.insert(0, url)
-        if "https://4khd.com" not in candidates:
-            candidates.append("https://4khd.com")
 
         session = Logic4KHD.get_session()
         html_to_parse = ""
         final_url = ""
 
-        for u in candidates:
-            if not u: continue
+        for u in candidates[:3]:
             try:
-                res = session.get(u, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
-                if res.status_code == 200:
-                    if 'wp-block-post-title' in res.text or 'nav-links' in res.text or 'popular' in res.text:
-                        if 'location.href = url;' not in res.text:
-                            return Logic4KHD._base_from_url(res.url) or u
-                    if not html_to_parse:
-                        html_to_parse = res.text
-                        final_url = res.url
-            except:
+                res = session.get(u, headers=Logic4KHD.HEADERS, timeout=8, allow_redirects=True)
+                if res.status_code == 200 and not html_to_parse:
+                    html_to_parse = res.text
+                    final_url = res.url
+            except Exception:
                 continue
 
-        # 점핑 페이지에서 추출된 후보 추가 탐색
+        extracted_candidates = []
         if html_to_parse:
-            extracted = re.findall(r"['\"]( https?://[a-zA-Z0-9.-]+\.(?:uuss|ssuu|4khd|gghh)\.uk)['\"]", html_to_parse)
-            for candidate in extracted:
-                candidate = candidate.strip()
-                try:
-                    moved = session.get(candidate, headers=Logic4KHD.HEADERS, timeout=10, allow_redirects=True)
-                    if moved.status_code == 200:
-                        if 'wp-block-post-title' in moved.text or 'nav-links' in moved.text or 'popular' in moved.text:
-                            if 'location.href = url;' not in moved.text:
-                                return Logic4KHD._base_from_url(moved.url)
-                except:
-                    continue
+            extracted_candidates = Logic4KHD._extract_discovery_candidates(html_to_parse, final_url)
+
+        all_candidates = []
+        for c in extracted_candidates + candidates:
+            base = Logic4KHD._base_from_url(c)
+            if base and base not in all_candidates and '4khd.com' not in base and 'uuss.uk' != base:
+                all_candidates.append(base)
+        for c in candidates:
+            base = Logic4KHD._base_from_url(c)
+            if base and base not in all_candidates:
+                all_candidates.append(base)
+
+        for candidate in all_candidates:
+            verified = Logic4KHD._verify_mirror(candidate, session)
+            if verified:
+                return verified
 
         return Logic4KHD.BASE_URL
 
@@ -109,7 +138,6 @@ class Logic4KHD:
     def discover_url(url=None):
         """Return the currently reachable 4KHD mirror URL after testing."""
         return Logic4KHD._discover_url(url)
-
 
     @staticmethod
     def _base_from_url(url):
@@ -141,7 +169,6 @@ class Logic4KHD:
         candidates.append(urljoin(base_url, '/page/2/'))
         candidates.append('https://gghh.uk/')
 
-        import re
         for match in re.finditer(r"['\"](https?://[^'\"]+)['\"]", html):
             url = match.group(1)
             if any(x in url for x in ['uuss.uk', 'ssuu.uk', '4khd.com', 'gghh.uk']):
@@ -183,7 +210,8 @@ class Logic4KHD:
     @staticmethod
     def get_list(base_url=None, page=1, search="", category=""):
         """게시물 목록 (WP REST API 우선, images 포함)"""
-        real_base = base_url if base_url and 'http' in base_url else Logic4KHD.BASE_URL
+        start_url = base_url if base_url and 'http' in base_url else Logic4KHD.BASE_URL
+        real_base = Logic4KHD._discover_url(start_url)
 
         try:
             if category:
@@ -201,11 +229,10 @@ class Logic4KHD:
                 posts = response.json()
                 results = []
                 for post in posts:
-                    # API content에서 이미지 직접 추출
                     content_html = ''
                     try:
                         content_html = post['content']['rendered']
-                    except:
+                    except Exception:
                         pass
 
                     all_images = []
@@ -221,9 +248,8 @@ class Logic4KHD:
                         'title': clean_title or str(post['id']),
                         'url': post['link'],
                         'thumbnail': '',
-                        'images': all_images,  # ★ API에서 직접 추출한 이미지 목록
+                        'images': all_images,
                     }
-                    # post['link']가 4khd.com 도메인으로 오면 실제 미러 주소로 치환
                     try:
                         from urllib.parse import urlparse as _urlparse
                         parsed_link = _urlparse(item['url'])
@@ -231,7 +257,7 @@ class Logic4KHD:
                             item['url'] = item['url'].replace(
                                 f"{parsed_link.scheme}://{parsed_link.netloc}", real_base.rstrip('/')
                             )
-                    except:
+                    except Exception:
                         pass
                     try:
                         thumb = None
@@ -241,13 +267,13 @@ class Logic4KHD:
                         if not thumb and all_images:
                             thumb = all_images[0]
                         item['thumbnail'] = Logic4KHD.normalize_image_url(thumb, for_thumbnail=True)
-                    except:
+                    except Exception:
                         pass
                     results.append(item)
                 return results
 
             return Logic4KHD.parse_html_list(real_base, page, search, category)
-        except:
+        except Exception:
             return Logic4KHD.parse_html_list(real_base, page, search, category)
 
     @staticmethod
@@ -303,7 +329,7 @@ class Logic4KHD:
                         if page > 1 and not any(p in res.url for p in [f"page/{page}", f"paged={page}", "query-"]):
                             continue
                         break
-                except:
+                except Exception:
                     continue
 
             if not res or res.status_code != 200: return []
@@ -335,11 +361,11 @@ class Logic4KHD:
                         'url': url_href,
                         'thumbnail': Logic4KHD.normalize_image_url(thumb, for_thumbnail=True),
                         'id': url_href.strip('/').split('/')[-1],
-                        'images': [],  # HTML 파싱에서는 이미지 없음
+                        'images': [],
                     }
                     if not any(r['id'] == item['id'] for r in results):
                         results.append(item)
-                except:
+                except Exception:
                     continue
             return results
         except Exception as e:
@@ -348,12 +374,11 @@ class Logic4KHD:
 
     @staticmethod
     def get_detail(url, session=None):
-        """게시물 상세 정보 추출 (모든 페이지 자동 탐색)"""
+        """게시물 상세 정보 추출 (모든 페이지 자동 탐색 및 미러 404 시 자동 fallback)"""
         try:
             if session is None:
                 session = Logic4KHD.get_session()
 
-            # 4khd.com 직접 접근 차단 대응: 활성 미러 URL로 치환
             parsed_input = urlparse(url)
             mirror_base = Logic4KHD.BASE_URL.rstrip('/')
             if '4khd.com' in parsed_input.netloc:
@@ -376,11 +401,22 @@ class Logic4KHD:
                         res = session.get(target_url, headers=Logic4KHD.HEADERS, timeout=15, verify=False)
                         if res.status_code == 200:
                             return BeautifulSoup(res.text, 'html.parser')
-                    except:
+                    except Exception:
                         pass
                 return None
 
             soup = get_page_data(url)
+            # 만약 현재 base_url에서 404가 발생하면 최신 활성 미러로 URL 교체 후 재시도
+            if not soup:
+                active_base = Logic4KHD.discover_url()
+                if active_base and active_base != base_url:
+                    parsed_orig = urlparse(url)
+                    fallback_url = url.replace(f"{parsed_orig.scheme}://{parsed_orig.netloc}", active_base)
+                    soup = get_page_data(fallback_url)
+                    if soup:
+                        url = fallback_url
+                        base_url = active_base
+
             if not soup:
                 print(f"[4KHD] get_detail: failed to load page: {url}")
                 return None
