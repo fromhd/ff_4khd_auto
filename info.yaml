@@ -4,5 +4,5 @@ package_name: ff_4khd_auto
 developer: DaeGumi
 description: 4KHD.com 키워드 기반 자동 다운로더 — 등록한 키워드의 새 게시물을 자동 감지하여 ZIP으로 다운로드합니다.
 author: DaeGumi w/Antigravity
-home: https://gitea.oc.nowzz.pp.ua/daegumi/ff_4khd_auto
-more: https://gitea.oc.nowzz.pp.ua/daegumi/ff_4khd_auto/src/branch/main/readme.md
+home: https://github.com/fromhd/ff_4khd_auto
+more: https://github.com/fromhd/ff_4khd_auto/blob/main/readme.md
