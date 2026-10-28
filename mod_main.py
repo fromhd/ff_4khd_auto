@@ -111,6 +111,8 @@ class ModuleMain(PluginModuleBase):
             return render_template(f"{self.template_prefix}_history.html", arg=arg)
         elif sub == 'setting':
             arg['title'] = '설정'
+            arg['auto_enabled'] = 'True' if self._is_auto_enabled() else 'False'
+            arg['proxy_enabled'] = 'True' if self._is_proxy_enabled() else 'False'
             return render_template(f"{self.template_prefix}_setting.html", arg=arg)
         elif sub == 'log':
             arg['title'] = '로그'
@@ -258,13 +260,18 @@ class ModuleMain(PluginModuleBase):
 
     # ─── Auto-scan timer ───────────────────────────────────────────────
 
+    def _is_auto_enabled(self):
+        return str(self.P.ModelSetting.get('auto_enabled')).lower() in ['true', 'on', '1']
+
+    def _is_proxy_enabled(self):
+        return str(self.P.ModelSetting.get('proxy_enabled')).lower() in ['true', 'on', '1']
+
     def _restart_timer(self):
         if self._scan_timer:
             self._scan_timer.cancel()
             self._scan_timer = None
 
-        auto_enabled = self.P.ModelSetting.get_bool('auto_enabled')
-        if not auto_enabled:
+        if not self._is_auto_enabled():
             self.P.logger.info('[4KHD-Auto] 자동 스캔 비활성화됨')
             return
 
@@ -272,7 +279,7 @@ class ModuleMain(PluginModuleBase):
 
         def tick():
             self._run_scan()
-            if self.P.ModelSetting.get_bool('auto_enabled'):
+            if self._is_auto_enabled():
                 self._scan_timer = threading.Timer(interval, tick)
                 self._scan_timer.daemon = True
                 self._scan_timer.start()
@@ -656,7 +663,10 @@ class ModuleMain(PluginModuleBase):
 
         form = MultiDict(req.form)
         for checkbox in ['proxy_enabled', 'auto_enabled']:
-            if checkbox not in form:
+            val = str(form.get(checkbox, '')).lower()
+            if val in ['true', 'on', '1']:
+                form[checkbox] = 'True'
+            else:
                 form[checkbox] = 'False'
         return RequestProxy(req, form)
 

@@ -60,7 +60,17 @@
 const package_name = "{{ arg['package_name'] }}";
 
 function settingFormData() {
-    const data = $('#setting').serializeArray();
+    if (typeof getFormdata === 'function') {
+        return getFormdata('#setting');
+    }
+    const data = [];
+    $('#setting').serializeArray().forEach(function(item) {
+        if (item.name === 'auto_enabled' || item.name === 'proxy_enabled') {
+            data.push({ name: item.name, value: (item.value === 'on' || item.value === 'True' || item.value === 'true') ? 'True' : 'False' });
+        } else {
+            data.push(item);
+        }
+    });
     ['proxy_enabled', 'auto_enabled'].forEach(function(name) {
         if (!data.some(item => item.name === name)) {
             data.push({ name: name, value: 'False' });
