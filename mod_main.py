@@ -11,6 +11,13 @@ from flask import Response, jsonify, render_template, request, stream_with_conte
 from plugin import PluginModuleBase, default_route_socketio_module
 from .logic_4khd import Logic4KHD
 
+try:
+    from framework import F
+    from framework.scheduler import Job
+except ImportError:
+    F = None
+    Job = None
+
 
 class ModuleMain(PluginModuleBase):
     template_prefix = "ff_4khd_auto"
@@ -271,23 +278,43 @@ class ModuleMain(PluginModuleBase):
             self._scan_timer.cancel()
             self._scan_timer = None
 
+        job_id = self.P.package_name
+        try:
+            if F and hasattr(F, 'scheduler') and F.scheduler:
+                if F.scheduler.is_include(job_id):
+                    F.scheduler.remove_job(job_id)
+        except Exception as e:
+            self.P.logger.error(f'[4KHD-Auto] 스케줄러 제거 중 오류: {e}')
+
         if not self._is_auto_enabled():
             self.P.logger.info('[4KHD-Auto] 자동 스캔 비활성화됨')
             return
 
-        interval = max(5, int(self.P.ModelSetting.get('scan_interval') or 30)) * 60
+        interval = str(self.P.ModelSetting.get('scan_interval') or '30')
+        registered_framework = False
+        try:
+            if F and hasattr(F, 'scheduler') and F.scheduler and Job:
+                job = Job(self.P.package_name, job_id, interval, self._run_scan, '4KHD 자동 다운로드')
+                F.scheduler.add_job_instance(job, run=False)
+                registered_framework = True
+                self.P.logger.info(f'[4KHD-Auto] FlaskFarm 공식 스케줄러에 등록 완료 (주기: {interval}분)')
+        except Exception as e:
+            self.P.logger.error(f'[4KHD-Auto] FlaskFarm 스케줄러 등록 실패, 내부 타이머 폴백: {e}')
 
-        def tick():
-            self._run_scan()
-            if self._is_auto_enabled():
-                self._scan_timer = threading.Timer(interval, tick)
-                self._scan_timer.daemon = True
-                self._scan_timer.start()
+        if not registered_framework:
+            interval_sec = max(5, int(interval)) * 60
 
-        self._scan_timer = threading.Timer(interval, tick)
-        self._scan_timer.daemon = True
-        self._scan_timer.start()
-        self.P.logger.info(f'[4KHD-Auto] 자동 스캔 시작 (주기: {interval // 60}분)')
+            def tick():
+                self._run_scan()
+                if self._is_auto_enabled():
+                    self._scan_timer = threading.Timer(interval_sec, tick)
+                    self._scan_timer.daemon = True
+                    self._scan_timer.start()
+
+            self._scan_timer = threading.Timer(interval_sec, tick)
+            self._scan_timer.daemon = True
+            self._scan_timer.start()
+            self.P.logger.info(f'[4KHD-Auto] 내부 폴백 타이머 시작 (주기: {interval}분)')
 
     def _run_scan(self):
         if self._scan_running:
@@ -726,3 +753,10 @@ class ModuleMain(PluginModuleBase):
         if self._scan_timer:
             self._scan_timer.cancel()
             self._scan_timer = None
+        try:
+            if F and hasattr(F, 'scheduler') and F.scheduler:
+                job_id = self.P.package_name
+                if F.scheduler.is_include(job_id):
+                    F.scheduler.remove_job(job_id)
+        except Exception as e:
+            self.P.logger.error(f'[4KHD-Auto] 스케줄러 제거 중 오류: {e}')
